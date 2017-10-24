@@ -1,0 +1,687 @@
+---
+title: "Analysis on Prosper loan data"
+author: "Ka Hung Wong"
+date: "Oct 21, 2017"
+output:
+  html_document: default
+  html_notebook: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(fig.width=5, fig.height=3)
+```
+
+# Introduction
+
+The loan data described in this notebook is obtained from [Prosper](https://www.prosper.com/), which is the first peer-to-peer lending marketplace in US. The data contains 113937 lending cases with 81 variables from 2005 to 2014.
+
+As a peer-to-peer lending marketplace, it is important to predict the health of a loan, *i.e.*, how likely to collect the debt, based on the information form the borrowers. In this notebook, we will apply exploring data analysis for this purpose.
+
+# Load the library
+The libraries that will be used in the notebook are loaded. They are: 1. *dplyr*, 2. *tidyr*, 3. *ggplot2*, and 4. *lubridate*.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(lubridate)
+library(Amelia)
+library(GGally)
+library(VIM)
+library(dplyr)
+library(tidyr)
+library(rpart)
+library(caret)
+
+```
+
+# Load data
+
+The data is stored in a CSV file, *prosperLoanData.csv*, and we import the data via function *read.csv*. Although there are 81 variables, we will explore the variables that is highly related with the financial health of the borrowers: *CreditGrade*, *ProsperRating*, *Term*, *LoanStatus*, *BorrowerAPR*, *BorrowerRate*, *EmploymentStatus*, *EmploymentStatusDuration*, *IsBorrowerHomeowner*, *CreditScoreRangeLower*, *CreditScoreRangeUpper*, *CurrentDelinquencies*, *DelinquenciesLast7Years*, *BankcardUtilization*, *DebtToIncomeRatio*, *IncomeRange*.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Load the raw data
+loan <- read.csv('prosperLoanData.csv')
+
+# get the datatype
+str(loan)
+```
+
+
+# Univariate Plots Section
+
+## LoanStatus
+
+This variable shows the health status of the loan. There are 9 different variables in this variable, and they are: *Cancelled*, *Chargedoff*, *Completed*, *Current*, *Defaulted*, *FinalPaymentInProgress*, and *PastDue*. 
+
+Most of the loan cases are in the current status, followed by the completed
+cases. However, there is quite amount of charged-off and defaulted loans. Some 
+of the loans are in the final payment progress and past-due with different 
+length of times, and cancelled. 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# create a bar chart 
+loan %>% 
+  ggplot(aes(LoanStatus)) + geom_bar() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+The aim of this notebook is to explore the health of loans based on Prosper data. It is convenient to separate the loan status into two levels: *good* and *bad* such that the health status is reduced to binary problem. Here, charged-off, defaulted, cancelled, and past-due status are combined and 
+are labeled as *bad*. All the rest of the status are considered as *good* 
+status. Most of the loan cases are in *good* status based on the bar chart below.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+loan$LoanStatus.binary <- as.character(loan$LoanStatus)
+loan$LoanStatus.binary[startsWith(as.character(loan$LoanStatus.binary), 
+                                  'Past')] <- 'bad'
+loan$LoanStatus.binary[loan$LoanStatus.binary == 'Chargedoff'] <- 'bad'
+loan$LoanStatus.binary[loan$LoanStatus.binary == 'Defaulted'] <- 'bad'
+loan$LoanStatus.binary[loan$LoanStatus.binary == 'Cancelled'] <- 'bad'
+loan$LoanStatus.binary[loan$LoanStatus.binary == 'FinalPaymentInProgress'] <- 'good'
+loan$LoanStatus.binary[loan$LoanStatus.binary == 'Current'] <- 'good'
+loan$LoanStatus.binary[loan$LoanStatus.binary == 'Completed'] <- 'good'
+
+# create a bar chart 
+loan %>% 
+  ggplot(aes(LoanStatus.binary)) + geom_bar() 
+
+```
+
+
+## ListingCreationDate
+
+*ListingCreationDate* is not directly related with the borrowers' financial health, it however relates with the credit grading systems used in the Prosper.
+This variables records the date that the loan was created. We can see that there is a discontinuity on the histogram, and this is probably related with the fact that Prosper had suspended and relaunched her lending business around July 2009.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Trasnform the string to date by ymd_hms
+loan$ListingCreationDate <- ymd_hms(loan$ListingCreationDate)
+
+# Get the min and max
+loan_date <- c(min(loan$ListingCreationDate), max(loan$ListingCreationDate))
+
+# plot the histrogram of the creation date
+loan %>% 
+  ggplot(aes(x = ListingCreationDate)) + 
+    geom_histogram(bins = round((loan_date[2]-loan_date[1])/(365/4)))+ 
+    coord_cartesian(xlim = loan_date) +
+    geom_vline(xintercept = ymd_hms("20090701 00:00:00"), 
+               linetype = 3, size = 1.5)
+```
+
+
+## CreditGrade and ProsperRating
+
+There are two variables related with credit scores in categorical values:  *CreditGrade* and *ProsperRating..Alpha.*. *CreditGrade* is the credit score before the relaunch of the business, while *ProsperRating..Alpha.* is score used after the relaunch of the business. Since both of them refers to the same property, we create a new variable by combining both of them to get a credit grade covering the entire time interval.
+
+A bar chat of *CreditGrade.combined* is plotted, and the distribution of the combined credit grade is quite normal. We have more loan cases with 'B', 'C' and 'D' credit grades. 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+loan <- loan %>% 
+  mutate(CreditGrade.combined = ifelse(ProsperRating..Alpha. !='', 
+                                       as.character(ProsperRating..Alpha.),
+                                       as.character(CreditGrade)))
+
+# Factor the new combined variable
+loan$CreditGrade.combined <- factor(loan$CreditGrade.combined, 
+                                    c('AA', 'A', 'B', 'C', 'D', 'E', 'HR'))
+
+# Get the distribution on levels
+table(loan$CreditGrade.combined)
+
+# 
+
+# Create a bar chart on CreditGrade.combined
+subset(loan, !is.na(CreditGrade.combined)) %>% 
+  ggplot(aes(x = CreditGrade.combined)) +
+    geom_bar()
+```
+
+## Term
+
+The Term is the length of the loan expressed in months. In general, the length are 12, 16, and 60. Most of the borrowers chose term of 36 months.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# get the distribution of Term
+table(loan$Term)
+
+# plot the bar chart of Term
+loan %>%
+  ggplot(aes(x = Term)) + geom_bar() + scale_x_continuous(breaks = c(12,36,60))
+```
+
+
+## BorrowerAPR and BorrowerRate
+
+A simple histogram of *BorrowerAPR* is created. Most of the loan APRs are from
+0.16 (Q1) to 0.28 (Q3). The mean and median APRs are 0.22 and 0.21. 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Summary of APR
+summary(loan$BorrowerAPR)
+
+# create a histrogram on APR
+loan %>% 
+  ggplot(aes(x = BorrowerAPR)) + geom_histogram(bins = round(0.4/0.025))
+```
+
+The borrower's interest rates is highly related with the APR of the loan since the interest rate can be calculated from the APR with the given term. Therefore, we can use one of them to represent the interest rate of the loan.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Summary of rate
+summary(loan$BorrowerRate)
+
+# create a histrogram on rate
+loan %>% 
+  ggplot(aes(x = BorrowerRate)) + geom_histogram(bins = round(0.4/0.025))
+
+# corrleation between APR and interest rate
+cor.test(loan$BorrowerAPR, loan$BorrowerRate)
+```
+
+
+## EmploymentStatus and EmploymentStatusDuration
+
+Most of the borrowers are employed or have a full-time job. 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# replace the empty value with NA
+loan$EmploymentStatus[loan$EmploymentStatus == ''] <- NA
+
+# replace the Not available to NA
+loan$EmploymentStatus[loan$EmploymentStatus == 'Not available'] <- NA
+
+
+# create a plot on EmploymentStatus
+loan %>% 
+  ggplot(aes(x = EmploymentStatus)) + geom_bar() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+The length in months of the employment status at the time the listing 
+was created and named as *EmploymentStatusDuration*. Most of the borrowers have the duration between 0 to 100 months, this may indicates the age of the borrowers since older people have a higher chance to gain more work experience.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+summary(loan$EmploymentStatusDuration)
+
+subset(loan, !is.na(loan$EmploymentStatusDuration)) %>% 
+  ggplot(aes(x = EmploymentStatusDuration)) + geom_histogram(bins = 50)
+```
+
+## IsBorrowerHomeowner
+
+The home-ownership is an important factor to determine the health of the loan.
+The bar chart suggests half of the borrowers own a house.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+summary(loan$IsBorrowerHomeowner)
+
+# create a plot on Homeowner
+loan %>% 
+  ggplot(aes(x = IsBorrowerHomeowner)) + geom_bar()
+```
+
+## CreditScoreRangeLower  and CreditScoreRangeUpper
+
+Credit scores from other agents are also recorded, and the lower and upper values are marked. Based on the histograms, the distribution between the lower and upper scores are very similar. 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# Summary of CreditScoreRange
+summary(loan$CreditScoreRangeLower)
+summary(loan$CreditScoreRangeUpper)
+
+# create a histrograms
+subset(loan, !is.na(loan$CreditScoreRangeLower)) %>% 
+  ggplot(aes(x = CreditScoreRangeLower)) + 
+  geom_histogram(bins = round(0.4/0.025))
+
+subset(loan, !is.na(loan$CreditScoreRangeUpper)) %>% 
+  ggplot(aes(x = CreditScoreRangeUpper)) + 
+  geom_histogram(bins = round(0.4/0.025))
+```
+
+## CurrentDelinquencies and DelinquenciesLast7Years
+
+*DelinquenciesLast7Years* is the number of delinquencies in the past 7 years at the time the credit profile was pulled. This is an good indicator of the credit history of the borrowers. Based on the data, most of the borrowers did not have
+delinquency in the last past 7 years. However, the tail is quite heavy, in which some borrowers have a strong history on delinquency in the past 7 years. 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+summary(loan$DelinquenciesLast7Years)
+
+subset(loan, !is.na(loan$DelinquenciesLast7Years)) %>%
+  ggplot(aes(x = DelinquenciesLast7Years)) + geom_histogram(bins = 50)
+```
+
+Another variable, *CurrentDelinquencies*, which is the number of accounts delinquent at the the credit profile was pulled, is highly related with the number of delinquency in the last 7 years. It is reasonable that the borrowers with more delinquent accounts have a higher number of delinquencies.
+
+```{r}
+summary(loan$CurrentDelinquencies)
+
+subset(loan, !is.na(loan$CurrentDelinquencies)) %>%
+  ggplot(aes(x = CurrentDelinquencies)) + geom_histogram(bins = 50)
+```
+
+## BankcardUtilization
+
+The bank card utilization is the percentage of available revolving credit that 
+is utilized at the time the credit profile was pulled. Most of the borrowers has the utilization between 0 to 1. However, some of them are the heavy users. 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+summary(loan$BankcardUtilization)
+
+subset(loan, !is.na(loan$BankcardUtilization)) %>% 
+  ggplot(aes(x = BankcardUtilization)) + geom_histogram(bins = 50)
+```
+
+## DebtToIncomeRatio
+
+This is the debt to income ratio of the borrower at the time the credit profile
+was pulled. This value is Null if the debt to income ratio is not available. This value is capped at 10.01 (any debt to income ratio larger than 1000% will 
+be returned as 1001%). Most of the borrowers have the ratios between 0 to 1, but some of them are having big debt. The variable may give some information about the purpose of the loans.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+summary(loan$DebtToIncomeRatio)
+
+subset(loan, !is.na(loan$DebtToIncomeRatio)) %>% 
+  ggplot(aes(x = DebtToIncomeRatio)) + geom_histogram(bins = 50)
+
+```
+
+## IncomeRange and IncomeVerifiable
+
+The income range is plotted. The plot suggests most of the incomes are within 
+25000-49999 and 50000-74999, and the distribution is close to the normal distribution except there are more people with earning >\$100K than that with earning between \$75K-99999. 
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+table(loan$IncomeRange)
+
+# transform the Not displayed as NA
+loan$IncomeRange[loan$IncomeRange == 'Not displayed'] <- NA
+loan$IncomeRange <- factor(loan$IncomeRange, c('$0', '$1-24,999', 
+                                               '$25,000-49,999', 
+                                               '$50,000-74,999', 
+                                               '$75,000-99,999', 
+                                               '$100,000+', 
+                                               'Not employed'))
+summary(loan$IncomeRange)
+
+loan %>% 
+  ggplot(aes(x = IncomeRange)) + geom_bar()+
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+The income levels can be validated with the supporting documents, but not all borrowers (~9000) can provide documentation to support their incomes.
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+summary(loan$IncomeVerifiable)
+
+loan %>% 
+  ggplot(aes(x = IncomeVerifiable)) + geom_bar()
+```
+
+# Univariate Analysis
+
+The dataset is in the wide format but it is still quite tidy. Although there is small missing data in the dataset, the missing rate is not very high. Some transformation may be required on some variables for further analysis.
+
+The main feature of interest is the binary loan status (*LoanStatus.binary*), which is transformed variable based on *LoanStatus*. The variable contains the health of the loans at the time when the dataset was created.
+
+The variables we considered in the last section could have impacts on the binary loan status. The credit scores from Prosper or other agents are the main variables that indicates the financial health of the borrowers. However, the rest of the variables are also linked to borrowers' characteristics, which may provide various degrees of information related with the loan status.
+
+We also create a new variable, *CreditGrade.combined*, which is the combined credit grade based on *CreditGrade* and *ProsperRating..Alpha.* representing the credit grading systems before and after Prosper's business relaunch. This variable can capture the credit grade assigned by Prosper for the entire time interval of the dataset. 
+
+In general, the continuous variables are easily to handle since no factor is not involved. However, more cautions are required to handle the discrete variables to obtain proper order, factor, and NA representation. 
+
+# Bivariate Plots Section
+
+## Credit Grades
+
+Credit scores are created in Prosper or other agents, which are represented by the *CreditGrade.combined* and *CreditScoreRangeLower*. The Propser credit score has 7 ratings from 'AA' to 'HR' (high risk). From the bar chart below, we can see that better credit score has a better chance to have a health loan. There is some borrowers have no Prosper credit score, which is one type of missing values. However, the missing data is not missing at random. The probability to have a bad loan status given the Prosper credit score is missing is higher than the average. This suggests we can extract information relates to loan status even the loan status is missing. Therefore, we treat the missing data as another category. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# plot the bar chart 
+loan %>% 
+  ggplot(aes(x = CreditGrade.combined, fill = LoanStatus.binary)) +
+    geom_bar(position = 'fill') + 
+    labs(y = "Proportion", x = "Prosper credit grade") +
+    scale_fill_discrete(name="Loan Status")
+
+# treat the missing data as a new variable
+loan$CreditGrade.combined[is.na(loan$CreditGrade.combined)] <- 'NA'
+```
+
+Most of the credit scores from other agents are larger than 250. Some of them are zero, which may indicate no credit scores was obtained when the loan was created in these cases. For the rest of the data, we can see a similar trend with the Prosper credit grade, in which the higher credit score the lower the chance to have a bad loan.
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# transform the 
+loan %>% 
+  ggplot(aes(x = CreditScoreRangeLower, fill=LoanStatus.binary)) +
+    geom_histogram(position = 'fill', bins = 20) +
+    labs(y = "Proportion", x = "Credit grade from other agents") +
+    scale_fill_discrete(name="Loan Status")
+```
+
+## Other supporting variables
+
+### Term 
+
+There is not much obvious pattern observed in this plot. The only observation is that the chance to have a bad loan is higher for the term with 36 months.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# transform the 
+loan %>% 
+  ggplot(aes(x = Term, fill=LoanStatus.binary)) +
+    geom_bar(position = 'fill') +
+    labs(y = "Proportion") +
+    scale_fill_discrete(name="Loan Status") +
+    scale_x_continuous(breaks=c(12,36,60))
+```
+
+### BorrowerAPR
+
+The rate of the loan seems to have some correlation with loan status. When the loan rate is low (between 0.05 to 0.2), there is a higher proportion of good loan. When the rate of loan is increased, the chance to have a bad loan is also increased. This is quite reasonable since it is more difficult to make the payment if the interest rate is high. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# transform the 
+loan %>% 
+  ggplot(aes(x = BorrowerAPR, fill=LoanStatus.binary)) +
+    geom_histogram(position = 'fill', bins = 25) +
+    labs(y = "Proportion") +
+    scale_fill_discrete(name="Loan Status")
+```
+
+### EmploymentStatus
+
+Before plotting the chart, I was assumed that if the borrowers are employed, full-time or self-employed, there is a higher to have a good loan. However, based on the bar chart, only *Employed* and *Other* shows little chance of having bad loan. While the rest of the them have similar levels of bad loan. When the data is missing, we have a high chance to have a bad loan, so we treat the missing data as a new category.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# refactor the Employment Status
+loan$EmploymentStatus <- factor(loan$EmploymentStatus, 
+                                c('Employed', 'Full-time', 'Self-employed',
+                                  'Part-time', 'Not employed', 'Retired',
+                                  'Other', 'NA'))
+
+# make the bar chart 
+loan %>% 
+  ggplot(aes(x = EmploymentStatus, fill=LoanStatus.binary)) +
+    geom_bar(position = 'fill') +
+    labs(y = "Proportion") +
+    scale_fill_discrete(name="Loan Status") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Turn the NA to 'NA'
+loan$EmploymentStatus[is.na(loan$EmploymentStatus)] <- 'NA'
+```
+
+### EmploymentStatusDuration
+
+The data suggests the longer the employment duration the better in the loan status. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# transform the 
+loan %>% 
+  ggplot(aes(x = EmploymentStatusDuration, fill=LoanStatus.binary)) +
+    geom_histogram(position = 'fill', bins = 20) +
+    labs(y = "Proportion") +
+    scale_fill_discrete(name="Loan Status")
+```
+
+### isBorrowerHomeowner
+
+At the beginning, I assumed that the financial health is better for the borrowers who have a home. However, the assumption is not the significant base on the plot we have.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# transform the 
+loan %>% 
+  ggplot(aes(x = IsBorrowerHomeowner, fill=LoanStatus.binary)) +
+    geom_bar(position = 'fill') +
+    labs(y = "Proportion") +
+    scale_fill_discrete(name="Loan Status") 
+```
+
+### DelinquenciesLast7Years
+
+The plot suggests the borrowers who have a bad delinquent history trends to not paying the loan, but the trend is not that obvious. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# transform the 
+loan %>% 
+  ggplot(aes(x = DelinquenciesLast7Years, fill=LoanStatus.binary)) +
+    geom_histogram(position = 'fill', bins = 15) +
+    labs(y = "Proportion") +
+    scale_fill_discrete(name="Loan Status")
+```
+
+### CurrentDelinquencies
+
+The more in the delinquent account, the higher chance to have a bad loan.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# transform the 
+loan %>% 
+  ggplot(aes(x = CurrentDelinquencies, fill=LoanStatus.binary)) +
+    geom_histogram(position = 'fill', bins = 10) +
+    labs(y = "Proportion") +
+    scale_fill_discrete(name="Loan Status")
+```
+
+### BankcardUtilization
+
+When the utilization is less than 1, there is a good chance to have a good loan.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# transform the 
+loan %>% 
+  ggplot(aes(x = BankcardUtilization, fill=LoanStatus.binary)) +
+    geom_histogram(position = 'fill', bins = 10) +
+    labs(y = "Proportion") +
+    scale_fill_discrete(name="Loan Status")
+```
+
+### DebtToIncomeRatio
+
+The higher the debt to income ratio, the higher chance to get a bad loan. It is quite reasonable since the more debt the more difficult to pay the loan.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# transform the 
+loan %>% 
+  ggplot(aes(x = DebtToIncomeRatio, fill=LoanStatus.binary)) +
+    geom_histogram(position = 'fill', bins = 10) +
+    labs(y = "Proportion") +
+    scale_fill_discrete(name="Loan Status")
+```
+
+### IncomeRange
+
+The data suggest the higher the higher in income the higher chance in getting a good loan. The missing data is not random since there is higher chance to have a bad loan provided the data is missing. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# transform the 
+loan %>% 
+  ggplot(aes(x = IncomeRange, fill=LoanStatus.binary)) +
+    geom_bar(position = 'fill', bins = 15) +
+    labs(y = "Proportion") +
+    scale_fill_discrete(name="Loan Status")+
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+### IncomeVerifiable
+
+The present of the valid document to support the income seems not a strong evidence to indicate the status of the loan according to the small difference between the case with or without the valid documents.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# transform the 
+loan %>% 
+  ggplot(aes(x = IncomeVerifiable, fill=LoanStatus.binary)) +
+    geom_bar(position = 'fill', bins = 15) +
+    labs(y = "Proportion") +
+    scale_fill_discrete(name="Loan Status")
+```
+
+
+# Bivariate Analysis
+
+The main features, *i.e.,* the credit grades from Prosper and other agents, show strong relationship with the loan status. However, other features such as the interest rate, the current delinquencies, etc are also have a strong relationship with the loan status. 
+
+In the main features, the credit grade obtained from other agents seems to have the strongest relationship to the loan status. For the supporting features, the interest rate also shows a strong relationship with the loan status. 
+
+# Multivariate Plots Section
+
+## Prosper and other agent credit grades
+
+We plot a pair of plots among the credit grade and the binary loan status. First, the Prosper credit grade has a positive relationship with the credit grade from other agents, *e.g.*, the loan which is labelled as 'AA' rating in Prosper scale also has a high credit score from other agents. This relationship can be clearly observed in the (2,1) plot. Second, based on the first 2 plots in the 3 rows, the binary loan status cannot perfectly separate by the Prosper credit grade and the credit score from other agents, although there are shifts of the distribution towards the poor credit on the bad loans. This suggests although the credit score provide the good reference on the financial health of the borrowers, it may not a reliable system to indicate the status of the loan.
+
+```{r echo=FALSE, echo=TRUE, fig.align="center", fig.height=15, fig.width=15, message=FALSE, warning=FALSE}
+# create a subset of features of interest
+loan_subset <- loan[, 
+                    c(8, 20, 21, 22, 36, 38, 42, 47, 48, 49, 26, 83, 82)]
+names(loan_subset)
+
+# pair of plots
+ggpairs(data = loan_subset,
+        columns=11:13, # Credit grades and the binary loan status
+        mapping = aes(color = LoanStatus.binary)
+        )
+```
+
+## Continuous supporting variables
+
+The interest rate is determined by the credit history of the borrowers in Prosper. We found that the interest rate has weak positive correlation with the current delinquencies and delinquencies history in the past 7 years (values of 0.15 and 0.16, respectively). Also, the correlation between the interest rate and bank card utilization is 0.26. On the other hand, the interest rate has a mild negative correlation with the credit score from other agent. This suggests the credit score is one of the main factors for determining the interest rate in Prosper. 
+
+The employment status duration seems don't have relationship with the interest rate and the delinquent history of the borrowers. There is only weak positive correlations with the bank card utilization (cor ~ 0.08) and the credit score (~0.08). Employment status may be one of the factors in calculating the credit score, which implies the weak correlation we seen in the plot. Moreover, the credit score has mild negative correlations with the current and the past 7 year delinquencies. This also suggests the delinquent history is one of the factors to determine the borrower's credit score. Finally, it is not surprised that there is a mild correlation between the current and the past 7 year delinquencies as suggested by the correlation test (cor ~ 0.38). 
+
+According to the scatter plots, we can see that it is difficult to separate the good and bad loans based on any two of these variables. 
+
+```{r, echo=TRUE, fig.align="center", fig.height=15, fig.width=15, message=FALSE, warning=FALSE}
+# pair of plots of the continuous variables
+ggpairs(data = loan_subset,
+        columns=c(1, 3, 5, 6, 7, 8, 11),
+        mapping = aes(color = LoanStatus.binary)
+        )
+```
+
+### Discrete supporting variables
+
+Employment status don't not have clear relationship with other variables. 
+
+Home-owner usually has a higher income according to the bar chart of income range and home-owner plot.
+
+However, no clear observations can make from the rest of the plots.
+
+```{r, echo=TRUE, fig.align="center", fig.height=15, fig.width=15, message=FALSE, warning=FALSE}
+# pair of plots of the continuous variables
+ggpairs(data = loan_subset,
+        columns=c(2, 4, 9, 10, 11),
+        mapping = aes(color = LoanStatus.binary)
+        )
+```
+
+# Multivariate Analysis
+
+## Missing data
+
+We provide some analysis on the subset of the loan data that are related with the missing data. Four variables have the higher missing rate, and they are *DebtToIncomeRatio* , *IncomeRange*, *EmploymentStatusDuration*, and *BankcardUtilization*. The missing rate is about 0.06 to 0.07, which are lower for real world dataset. 
+
+```{r, echo=TRUE, fig.align="center", fig.height=6, fig.width=15, message=FALSE, warning=FALSE}
+# Get the missing data information
+mice_plot <- aggr(loan_subset, numbers=TRUE, sortVars=TRUE,
+                  labels=names(loan_subset))
+```
+
+
+## Machine learning
+
+Finally, we develop a decision tree classifier to predict the status of loan based on a subset of the loan dataset. The subset contains 12 variables and 1 predicted target (loan status). The decision tree classifier is called from the *RPART* package as a preliminary trail. A tree with 7 levels is developed with the F1 score of 0.21, which is not that promising if we want to recall the potential bad loans. However, this is a good trail to apply the machine learning for predictive borrowers financial health. The learner can possibly improved if the entire data is involved. To use the full dataset, further exploratory data analysis is required for the rest of the variables that are not studied in this analysis. Also, a better care is required to handle the missing rate.
+
+
+```{r, echo=TRUE, fig.height=7, fig.width=15, message=FALSE, warning=FALSE}
+set.seed(2017)
+
+# generate the complete data
+completed_data <- loan_subset[complete.cases(loan_subset), ]
+
+# split the data 
+train_indexes = createDataPartition(completed_data$LoanStatus.binary, 
+                                   p=0.8, list=FALSE)
+train_data <- completed_data[train_indexes, ]
+test_data <- completed_data[-train_indexes, ]
+
+# fitting
+fit <- rpart(LoanStatus.binary ~ ., data = train_data, 
+             method= "class", 
+             control=rpart.control(minsplit=40, minbucket=20, 
+                                   maxdepth = 7, cp=.0001,
+                                   xval = 10))
+
+# make predictions
+predictions <- predict(fit, test_data[, 1:12])
+
+# plot tree 
+plot(fit, uniform=TRUE, 
+  	main="Classification Tree for Loan Status")
+text(fit, use.n=FALSE, all=TRUE, cex=.90)
+
+# vectors required to calculate the metric score
+test_predictions <- predictions[, 'good']
+test_predictions[test_predictions>=0.5] <- 'good'
+test_predictions[test_predictions< 0.5] <- 'bad' 
+test_predictions <- factor(test_predictions, c('good', 'bad'))
+test_actual <- factor(test_data$LoanStatus.binary, c('good', 'bad'))
+
+# confusion matrix
+confusionMatrix(test_predictions, test_actual, positive = 'bad', 
+                mode = "everything")
+```
+
+------
+
+# Final Plots and Summary
+
+In this plot, the credit grading from Prosper and other agents and the binary loan status are considered. The plot shows that there is a positive correlation of the credit grading from Prosper and other agents. The distribution of both credit grades are plotted based on the loan status. For the Prosper credit grade, the distribution of good loan status is more towards the top credit rating, 'AA'. For the credit score from other agents, the distribution of good loan status is more towards the high credit score. Both of them suggests the better credit grade the higher chance to have a good loan.
+
+### Plot One
+```{r echo=FALSE, echo=TRUE, fig.align="center", fig.height=10, fig.width=10, message=FALSE, warning=FALSE}
+# create a subset of features of interest
+loan_subset <- loan[, 
+                    c(8, 20, 21, 22, 36, 38, 42, 47, 48, 49, 26, 83, 82)]
+names(loan_subset)
+
+# pair of plots
+ggpairs(data = loan_subset,
+        columns=11:13, # Credit grades and the binary loan status
+        mapping = aes(color = LoanStatus.binary)
+        )
+```
+
+### Plot Two
+
+Scatter plots and correlations of continuous variables are plotted and calculated. From the scatter plots, the loan status cannot be easily separated by any two continuous variables that are considered in the plots. This suggests more advanced statistical methods are required to get a better perpetration of loan status based on the given variables. The plots also suggest there are some correlation among the variables. For example, the credit score is related with the interest rate, the delinquent history, and the bank card utilization. 
+
+
+```{r, echo=TRUE, fig.align="center", fig.height=15, fig.width=15, message=FALSE, warning=FALSE}
+# pair of plots of the continuous variables
+ggpairs(data = loan_subset,
+        columns=c(1, 3, 5, 6, 7, 8, 11),
+        mapping = aes(color = LoanStatus.binary)
+        )
+```
+
+### Plot Three
+
+The missing rate of the subset of the dataset is calculated, and the result is plotted. The highest missing rates are less than 10\%, which is not significant compared other real world data such as medical dataset such as MIMIC-III. The missing data is important in data analysis, cleaning and imputation of data are general required to develop a good predictive model.  
+
+```{r, echo=TRUE, fig.align="center", fig.height=6, fig.width=15, message=FALSE, warning=FALSE}
+# Get the missing data information
+mice_plot <- aggr(loan_subset, numbers=TRUE, sortVars=TRUE,
+                  labels=names(loan_subset))
+```
+
+# Reflection
+
+## About R
+I general use Python for data analysis, therefore I need to get used to the R in order to perform the EDA in this notebook. I found that the syntax of R is not that difficult to get used to, and I spent more time on understand the data structures of R, for instance , factor. The concept of visualization tool, plotting, is very different from Python package like matplotlib. The learning curve is steep but it allows complex visualization with less preparation on the data. It is not good to reinvent the wheel, so it is good to choose the available packages for solving the problems. I realized that there are a lot of various packages available in R, but the challenge is to choose the most suitable one. 
+
+## About the data
+The dataset is obtained from the Prosper (probably using Prosper API). Although definition of the variables is available, I still took quite amount of time to understand and decide the variable of interest for this EDA. The variables in the dataset are mixed types which increases the difficulty in exploratory analysis. A preliminary classification model is developed, and the results is not that promising. Further data cleaning and model development are required to achieve better results. 
+
+Also, there are 81 variables in the dataset and I only explore a subset of the data. More questions can be answered, for example, the borrower's payment pattern, the chance of a borrower to past the due, the optimized interest rate, risk management etc. To fully utilize the dataset, however, a significant effort on data wrangling is required. 
